@@ -1,0 +1,489 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "COAF CLO POC - ASG App Tier",
+    "Parameters": {
+        "ASGSNSTopic": {
+            "Description": "Topic for ASGs to send alerts.",
+            "Type": "String"
+        },
+        "ASV": {
+            "Description": "Specific ASV (Application Service) in the CMDB for the application being built.",
+            "Type": "String",
+            "Default": "UNDEFINED - Please update your stack with the correct ASV tag"
+        },
+        "ApplicationVersion": {
+            "Description": "The deployed application version",
+            "Type": "String",
+            "Default": "UNDEFINED"
+        },
+        "OwnerContact": {
+            "Description": "Contact information of the user launching the stack.",
+            "Type": "String"
+        },
+        "CMDBEnvironment": {
+            "Description": "Specific ENV in the CMDB for the application being built, allows the ability to track additional attributes (non-prod, prod, DR) from the CMDB vs. a tag.",
+            "Type": "String"
+        },
+        "SNSTopicARN": {
+            "Description": "Notification topic leveraged for alarm/incident notifications.",
+            "Type": "String"
+        },
+        "ApplicationName": {
+            "Description": "Application name.",
+            "Type": "String"
+        },
+        "ValueStream": {
+            "Description": "Valid Value Stream Names.",
+            "Type": "String"
+        },
+        "Environment": {
+            "Description": "Dev, Test, Pre-Prod, Production, or DR.",
+            "Type": "String"
+        },
+        "echo2cfdetails": {
+            "Description": "Strings to echo to /tmp/cf_details.txt on the EC2 instances.",
+            "Type": "String"
+        },
+        "AppAMI": {
+            "Description": "AMI ID for the App EC2 Instances.",
+            "Type": "String",
+            "ConstraintDescription": "Must be an existing AMI in the Region."
+        },
+        "App2ndEBSDeviceName": {
+            "Description": "2nd EBS volume device name.",
+            "Type": "String",
+            "ConstraintDescription": "Must not conflict with existing device names."
+        },
+        "App2ndEBSVolSize": {
+            "Description": "2nd EBS volume size in gigabytes.",
+            "Type": "Number"
+        },
+        "App2ndEBSSnapshotID": {
+            "Description": "2nd EBS volume snapshot ID.",
+            "Type": "String",
+            "ConstraintDescription": "Must be an existing snapshot in the Region."
+        },
+        "AppChefRole": {
+            "Description": "The chef role that will be run after launch.",
+            "Type": "String",
+            "ConstraintDescription": "This role must exist in the Chef 12 server."
+        },
+        "AppChefServer": {
+            "Description": "Chef Server for the App instances.",
+            "Type": "String"
+        },
+        "AppChefOrg": {
+            "Description": "Chef Org for the App instances.",
+            "Type": "String"
+        },
+        "AppChefEnv": {
+            "Description": "Chef Environment Type for the App instances.",
+            "Type": "String"
+        },
+        "AppELB": {
+            "Description": "App ELB to connect the auto-scaling group to.",
+            "Type": "String",
+            "Default": ""
+        },
+        "AppKeyName": {
+            "Description": "KeyPair Name for the EC2 Instances.",
+            "Type": "String",
+            "ConstraintDescription": "Must be an existing Key Pair."
+        },
+        "AppHealthCheckType": {
+            "Description": "App Health Check Type",
+            "Type": "String",
+            "Default": "ELB",
+            "AllowedValues": ["EC2", "ELB"]
+        },
+        "AppInstanceType": {
+            "Description": "EC2 instance type",
+            "Type": "String"
+        },
+        "AppEC2Subnets": {
+            "Description": "These are the 2 subnets that will be used for the load balancer and instances.  These should be in separate Availability Zones",
+            "Type": "CommaDelimitedList"
+        },
+        "AppEC2SecurityGroup": {
+            "Description": "ID of SecurityGroup",
+            "Type": "CommaDelimitedList",
+            "ConstraintDescription": "Security Group must already exist."
+        },
+        "AppHealthCheckGracePeriod": {
+            "Description": "Number of seconds after launch before ELB starts Health Checks.",
+            "Type": "Number",
+            "MinValue": "40",
+            "MaxValue": "5000",
+            "ConstraintDescription": "Must be a number from 40 to 5000."
+        },
+        "AppInstanceProfile": {
+            "Description": "The name or the Amazon Resource Name (ARN) of the instance profile associated with the IAM role for the App instances.",
+            "Type": "String",
+            "Default": ""
+        },
+        "AppMinCount": {
+            "Description": "Minimum number of EC2 instances to launch.",
+            "Type": "Number",
+            "MinValue": "1",
+            "MaxValue": "10"
+        },
+        "AppMaxCount": {
+            "Description": "Maximum number of EC2 instances to launch.",
+            "Type": "Number",
+            "MinValue": "1",
+            "MaxValue": "10"
+        },
+        "AppScaleUp": {
+            "Description": "CPU Percentage to Scale Up.",
+            "Type": "Number",
+            "MinValue": "10",
+            "MaxValue": "100"
+        },
+        "AppScaleDown": {
+            "Description": "CPU Percentage to Scale Down.",
+            "Type": "Number",
+            "MinValue": "10",
+            "MaxValue": "100"
+        },
+        "ComputerGroup": {
+            "Description": "AD Computer Group for this host to join",
+            "Type": "String",
+            "Default": ""
+        },
+        "DomainName": {
+            "Description": "Domain Name for this host to join",
+            "Type": "String",
+            "Default": ""
+        },
+        "MetricName": {
+            "Description": "CloudWatch Metric Name",
+            "Type": "String",
+            "Default": "CPUUtilization"
+        },
+        "Namespace": {
+            "Description": "CloudWatch Namespace",
+            "Type": "String",
+            "Default": "AWS/EC2"
+        },
+        "Timezone": {
+            "Description": "Timezone",
+            "Type": "String",
+            "Default": "Chicago",
+            "AllowedValues": ["New_York", "Chicago", "Denver", "Los_Angeles"]
+        }
+    },
+    "Conditions": {
+      "AssociateELB": {
+         "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AppELB" }, ""] } ]
+      },
+      "AssociateInstanceProfile": {
+         "Fn::Not": [ { "Fn::Equals": [ { "Ref": "AppInstanceProfile" }, ""] } ]
+      },
+      "JoinDomain": {
+         "Fn::And": [
+            { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "ComputerGroup" }, ""] } ] },
+            { "Fn::Not": [ { "Fn::Equals": [ { "Ref": "DomainName" }, ""] } ] }
+         ]
+      }
+    },
+    "Resources": {
+        "AppASG": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1",
+                    "MaxBatchSize": "1",
+                    "PauseTime": "PT10M0S"
+                }
+            },
+            "Properties": {
+                "NotificationConfigurations" : [
+                    {
+                        "TopicARN" : { "Ref" : "ASGSNSTopic" },
+                        "NotificationTypes" : [
+                          "autoscaling:EC2_INSTANCE_LAUNCH",
+                          "autoscaling:EC2_INSTANCE_LAUNCH_ERROR",
+                          "autoscaling:EC2_INSTANCE_TERMINATE",
+                          "autoscaling:EC2_INSTANCE_TERMINATE_ERROR"
+                        ]
+                    }
+                ],
+                "VPCZoneIdentifier": {
+                    "Ref": "AppEC2Subnets"
+                },
+                "LaunchConfigurationName": {
+                    "Ref": "AppLaunchConfig"
+                },
+                "HealthCheckType": {
+                  "Fn::If": [
+                    "AssociateELB",
+                    { "Ref": "AppHealthCheckType" },
+                    "EC2"
+                  ]
+                },
+                "HealthCheckGracePeriod": { "Ref": "AppHealthCheckGracePeriod" },
+                "MaxSize": { "Ref": "AppMaxCount" },
+                "MinSize": { "Ref": "AppMinCount" },
+                "LoadBalancerNames": {
+                  "Fn::If": [
+                    "AssociateELB",
+                    [ { "Ref": "AppELB" } ],
+                    { "Ref": "AWS::NoValue" }
+                  ]
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {"Fn::Join" : [ "", [ {"Ref": "ApplicationName"}, " App ASG" ] ]},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "ASV",
+                        "Value": {"Ref" : "ASV"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "ApplicationVersion",
+                        "Value": {"Ref" : "ApplicationVersion"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "OwnerContact",
+                        "Value": {"Ref" : "OwnerContact"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "CMDBEnvironment",
+                        "Value": {"Ref" : "CMDBEnvironment"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "SNSTopicARN",
+                        "Value": {"Ref" : "SNSTopicARN"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "ApplicationName",
+                        "Value": {"Ref" : "ApplicationName"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "ValueStream",
+                        "Value": {"Ref" : "ValueStream"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "Stack",
+                        "Value": {"Ref" : "AWS::StackName"},
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "Environment",
+                        "Value": {"Ref" : "Environment"},
+                        "PropagateAtLaunch": "true"
+                    }
+                ]
+            }
+        },
+        "AppLaunchConfig": {
+            "Type": "AWS::AutoScaling::LaunchConfiguration",
+            "Properties": {
+                "ImageId": {
+                    "Ref": "AppAMI"
+                },
+                "KeyName": {
+                    "Ref": "AppKeyName"
+                },
+                "SecurityGroups": {
+                    "Ref": "AppEC2SecurityGroup"
+                },
+                "BlockDeviceMappings": [
+                    {
+                        "DeviceName": {
+                            "Ref": "App2ndEBSDeviceName"
+                        },
+                        "Ebs": {
+                            "VolumeSize": {
+                                "Ref": "App2ndEBSVolSize"
+                            },
+                            "VolumeType": "gp2",
+                            "SnapshotId": {
+                                "Ref": "App2ndEBSSnapshotID"
+                            },
+                            "DeleteOnTermination": "true"
+                        }
+                    }
+                ],
+                "InstanceType": {
+                    "Ref": "AppInstanceType"
+                },
+                "IamInstanceProfile": {
+                  "Fn::If": [
+                    "AssociateInstanceProfile",
+                    { "Ref": "AppInstanceProfile" },
+                    { "Ref": "AWS::NoValue" }
+                  ]
+                },
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                          "#!/bin/bash -ex \n",
+                          "mv /etc/localtime /etc/localtime.save; ln -sf /usr/share/zoneinfo/America/", { "Ref": "Timezone" }, " /etc/localtime\n",
+                          "exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1 \n",
+                          "IP=$(curl 169.254.169.254/latest/meta-data/local-ipv4) \n",
+                          "if nslookup $IP; then \n",
+                          "HOSTNAME=$(nslookup $IP | grep 'name = ' | cut -d'=' -f2 | cut -d'.' -f1-4) \n",
+                          "hostname $HOSTNAME \n",
+                          "else \n",
+                          "export HOSTNAME=$( curl 169.254.169.254/latest/meta-data/local-hostname/ )\n",
+                          "cd /opt/prebuild_depot/COFLinux\n",
+                          "./ec2-hostname.sh > /tmp/hostname.log 2>&1\n",
+                          "fi \n",
+                          {"Ref": "echo2cfdetails"},
+                          "\ncd /opt/prebuild_depot/\n",
+                                "./chef-bootstrap-linux.sh ",
+                                { "Ref": "AppChefServer" },
+                                " ",
+                                { "Ref": "AppChefOrg" },
+                                " aws ",
+                                { "Ref": "AppChefRole" },
+                                " ",
+                                { "Ref": "AppChefEnv" },
+                                "\n",
+
+                                { "Fn::If": [
+                                   "JoinDomain",
+                                   { "Fn::Join": [ " ", [
+                                      "sleep 60\n",
+                                      "yum -y install /opt/prebuild_depot/COFAgents/centrifydc* \n", 
+                                      "yum -y install /opt/prebuild_depot/COFAgents/COF-centrify-scripts* \n", 
+                                      "cd /opt/centrify \n", 
+                                      "/opt/centrify/domain-join.sh ",
+                                      { "Ref": "DomainName" },
+                                      { "Ref": "ComputerGroup" },
+                                      "aws >> /var/log/centrify_stacktrace.log 2>&1 \n"
+                                   ] ] },
+                                   { "Fn::Join": [ " ", [
+                                     "# Skip joining domain\n"
+                                   ] ] }
+                                ] }
+
+
+                            ]
+                        ]
+                    }
+                }
+            }
+        },
+        "CPUAlarmHigh": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Scale-up if CPU is high for 5 minutes",
+                "MetricName": { "Ref": "MetricName" },
+                "Namespace": { "Ref": "Namespace" }, 
+                "Statistic": "Average",
+                "Period": "60",
+                "EvaluationPeriods": "5",
+                "Threshold": {
+                    "Ref": "AppScaleUp"
+                },
+                "AlarmActions": [
+                    { "Ref": "ScaleUpPolicy" }
+                ],
+                "OKActions": [],
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": { "Ref": "AppASG" }
+                    }
+                ],
+                "ComparisonOperator": "GreaterThanThreshold"
+            }
+        },
+        "CPUAlarmNormal": {
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Scale-down if CPU is low for 15 minutes",
+                "MetricName": { "Ref": "MetricName" },
+                "Namespace": { "Ref": "Namespace" }, 
+                "Statistic": "Average",
+                "Period": "60",
+                "EvaluationPeriods": "15",
+                "Threshold": {
+                    "Ref": "AppScaleDown"
+                },
+                "AlarmActions": [
+                    {
+                        "Ref": "ScaleDownPolicy"
+                    }
+                ],
+                "OKActions": [],
+                "Dimensions": [
+                    {
+                        "Name": "AutoScalingGroupName",
+                        "Value": {
+                            "Ref": "AppASG"
+                        }
+                    }
+                ],
+                "ComparisonOperator": "LessThanThreshold"
+            }
+        },
+        "ScaleUpPolicy": {
+            "Type": "AWS::AutoScaling::ScalingPolicy",
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "AppASG"
+                },
+                "Cooldown": "300",
+                "ScalingAdjustment": "1"
+            }
+        },
+        "ScaleDownPolicy": {
+            "Type": "AWS::AutoScaling::ScalingPolicy",
+            "Properties": {
+                "AdjustmentType": "ChangeInCapacity",
+                "AutoScalingGroupName": {
+                    "Ref": "AppASG"
+                },
+                "Cooldown": "1200",
+                "ScalingAdjustment": "-1"
+            }
+        }
+    },
+    "Outputs": {
+        "OwnerContact": {
+            "Value": {
+                "Ref": "OwnerContact"
+            }
+        },
+        "CMDBEnvironment": {
+            "Value": {
+                "Ref": "CMDBEnvironment"
+            }
+        },
+        "SNSTopicARN": {
+            "Value": {
+                "Ref": "SNSTopicARN"
+            }
+        },
+        "ApplicationName": {
+            "Value": {
+                "Ref": "ApplicationName"
+            }
+        },
+        "ValueStream": {
+            "Value": {
+                "Ref": "ValueStream"
+            }
+        },
+        "Environment": {
+            "Value": {
+                "Ref": "Environment"
+            }
+        }
+    }
+}
